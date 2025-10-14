@@ -4,7 +4,7 @@ import os
 import math
 import random
 import fractions
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 import pandas as pd
 import streamlit as st
 from fpdf import FPDF
@@ -16,7 +16,7 @@ from fpdf.enums import XPos, YPos
 st.set_page_config(page_title="算数ドリルジェネレータ", page_icon="🧮", layout="wide")
 
 # ------------------------------------------------------------------------------
-# 出題プリセット表（ユーザー要望に準拠）
+# 出題プリセット表
 # ------------------------------------------------------------------------------
 PRESET_TABLE: Dict[str, Dict[str, List[str]]] = {
     "小3": {
@@ -49,32 +49,16 @@ PRESET_TABLE: Dict[str, Dict[str, List[str]]] = {
         ],
     },
     "小5": {
-        "分数の四則混合": [
-            "frac_terms 2〜3", "同上", "3", "3", "3"
-        ],
-        "小数×分数・分数×分数": [
-            "frac_mixed", "同上", "同上", "同上", "同上"
-        ],
-        "割合の基本計算": [
-            "of/up/down", "同上", "reverse", "chain", "chain"
-        ],
-        "比の基本計算": [
-            "簡単比", "同上", "同上", "難易度高", "難易度高"
-        ],
+        "分数の四則混合": ["frac_terms 2〜3", "同上", "3", "3", "3"],
+        "小数×分数・分数×分数": ["frac_mixed", "同上", "同上", "同上", "同上"],
+        "割合の基本計算": ["of/up/down", "同上", "reverse", "chain", "chain"],
+        "比の基本計算": ["簡単比", "同上", "同上", "難易度高", "難易度高"],
     },
     "小6": {
-        "分数・小数の複合計算": [
-            "frac+decimal", "同上", "同上", "同上", "同上"
-        ],
-        "逆算（□を求める）": [
-            "基本", "同上", "同上", "同上", "同上"
-        ],
-        "最大公約数・最小公倍数": [
-            "簡単", "同上", "同上", "高難度", "高難度"
-        ],
-        "比例・反比例の基本計算": [
-            "基本", "同上", "同上", "難易度高", "難易度高"
-        ],
+        "分数・小数の複合計算": ["frac+decimal", "同上", "同上", "同上", "同上"],
+        "逆算（□を求める）": ["基本", "同上", "同上", "同上", "同上"],
+        "最大公約数・最小公倍数": ["簡単", "同上", "同上", "高難度", "高難度"],
+        "比例・反比例の基本計算": ["基本", "同上", "同上", "難易度高", "難易度高"],
     },
 }
 
@@ -93,7 +77,7 @@ def rand_nonzero(a: int, b: int) -> int:
             return x
 
 def simplify_fraction(fr: fractions.Fraction) -> fractions.Fraction:
-    return fractions.Fraction(fr.numerator, fr.denominator)  # 自然に既約化
+    return fractions.Fraction(fr.numerator, fr.denominator)
 
 def format_fraction(fr: fractions.Fraction) -> str:
     if fr.denominator == 1:
@@ -112,10 +96,7 @@ def lcmm(*args: int) -> int:
 # ------------------------------------------------------------------------------
 # PDF: 日本語フォント対応 + フォールバック
 # ------------------------------------------------------------------------------
-def find_japanese_font() -> Tuple[str | None, int]:
-    """
-    Returns (font_path, ttc_index)
-    """
+def find_japanese_font() -> Tuple[Union[str, None], int]:
     candidates = [
         ("assets/NotoSansJP-Regular.ttf", 0),
         ("assets/NotoSansJP-Regular.otf", 0),
@@ -131,7 +112,18 @@ def find_japanese_font() -> Tuple[str | None, int]:
     return None, 0
 
 def ascii_safe(text: str) -> str:
+    # 日本語フォントが無いときは '?' 置換でASCII化（落ちないことを最優先）
     return text.encode("latin-1", "replace").decode("latin-1")
+
+def to_bytes(x) -> bytes:
+    """
+    fpdf2>=2.5 では output(dest="S") は bytes/bytearray を返す。
+    古い互換では str の場合もあるので吸収する。
+    """
+    if isinstance(x, (bytes, bytearray)):
+        return bytes(x)
+    # 万一 str の場合のみエンコード
+    return x.encode("latin-1", "ignore")
 
 def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> bytes:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
@@ -170,15 +162,14 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
             pdf.set_text_color(0, 0, 0)
         pdf.ln(2)
 
-    return pdf.output(dest="S").encode("latin-1", "ignore")
+    # ★ ここが修正ポイント：bytes/bytearray/str を全部吸収
+    return to_bytes(pdf.output(dest="S"))
 
 # ------------------------------------------------------------------------------
 # 出題ジェネレータ群
-# （要点を押さえつつ過度に長文化しない実装）
 # ------------------------------------------------------------------------------
 def gen_sum_diff(digits: int, terms: int) -> Tuple[str, str]:
     nums = [rand_int_with_digits(digits) for _ in range(terms)]
-    # ランダムに + / - を混ぜる
     ops = [random.choice(["+", "-"]) for _ in range(terms - 1)]
     expr = str(nums[0])
     val = nums[0]
@@ -198,7 +189,7 @@ def gen_mul(a_digits: int, b_digits: int) -> Tuple[str, str]:
 
 def gen_div_with_remainder(div_lo: int, div_hi: int) -> Tuple[str, str]:
     a = random.randint(div_lo, div_hi)
-    b = rand_nonzero(2, max(2, min(9, a)))  # 割る数は小さめ・0回避
+    b = rand_nonzero(2, max(2, min(9, a)))
     q, r = divmod(a, b)
     if r == 0:
         r = random.randint(1, b - 1)
@@ -261,17 +252,13 @@ def gen_fraction_addsub(den_digits: int, terms: int) -> Tuple[str, str]:
     return f"{expr} =", format_fraction(simplify_fraction(v))
 
 def gen_fraction_mixed() -> Tuple[str, str]:
-    # 小数×分数・分数×分数
     if random.choice([True, False]):
-        # 小数×分数
         a = round(random.uniform(0.1, 9.9), 1)
         den = random.randint(2, 12)
         num = random.randint(1, den - 1)
-        fr = fractions.Fraction(num, den)
         val = a * (num / den)
         return f"{a} × {num}/{den} =", f"{round(val, 3)}"
     else:
-        # 分数×分数
         den1 = random.randint(2, 12); num1 = random.randint(1, den1 - 1)
         den2 = random.randint(2, 12); num2 = random.randint(1, den2 - 1)
         fr1 = fractions.Fraction(num1, den1)
@@ -284,14 +271,12 @@ def gen_ratio_basic(hard: bool=False) -> Tuple[str, str]:
     b = random.randint(2, 30)
     g = math.gcd(a, b)
     if hard:
-        # 縮約→外項内項の考え方
         return f"{a}:{b} を最も簡単な比に直せ。", f"{a//g}:{b//g}"
     else:
         k = random.randint(2, 9)
         return f"{a}:{b} を {k}倍した比を求めよ。", f"{a*k}:{b*k}"
 
 def gen_percent_basic(mode: str) -> Tuple[str, str]:
-    # mode: of/up/down/reverse/chain
     if mode in ("of", "up", "down"):
         base = random.randint(50, 500)
         p = random.choice([5, 10, 12, 20, 25, 30, 40, 50])
@@ -302,7 +287,6 @@ def gen_percent_basic(mode: str) -> Tuple[str, str]:
         else:
             return f"{base} を {p}% 減らすと？", str(round(base * (1 - p/100), 2))
     elif mode == "reverse":
-        # ある数の 120% が 360。元はいくつ？
         p = random.choice([120, 150, 80, 75, 200])
         y = random.randint(100, 600)
         x = y * 100 / p
@@ -314,7 +298,6 @@ def gen_percent_basic(mode: str) -> Tuple[str, str]:
         return f"{base} を {p1}%増やし、その後 {p2}%減らすと？", f"{round(val, 2)}"
 
 def gen_frac_mixed_ops(terms: int) -> Tuple[str, str]:
-    # 分数の四則混合（2〜3項）
     frs = []
     for _ in range(terms):
         den = random.randint(2, 12)
@@ -340,17 +323,14 @@ def gen_frac_mixed_ops(terms: int) -> Tuple[str, str]:
     return f"{expr} =", format_fraction(simplify_fraction(v))
 
 def gen_frac_decimal_combo() -> Tuple[str, str]:
-    # 小6: 分数・小数の複合
     if random.choice([True, False]):
         a = round(random.uniform(0.1, 9.9), 1)
         den = random.randint(2, 12)
         num = random.randint(1, den - 1)
         op = random.choice(["+", "-", "×", "÷"])
-        fr = fractions.Fraction(num, den)
         val = eval(f"{a} { {'+':'+','-':'-','×':'*','÷':'/'}[op] } {num/den}")
         return f"{a} {op} {num}/{den} =", f"{round(val, 3)}"
     else:
-        # (分数) ± (小数)
         den = random.randint(2, 12)
         num = random.randint(1, den - 1)
         a = round(random.uniform(0.1, 9.9), 2)
@@ -359,11 +339,9 @@ def gen_frac_decimal_combo() -> Tuple[str, str]:
         return f"{num}/{den} {op} {a} =", f"{round(val, 3)}"
 
 def gen_inverse_basic() -> Tuple[str, str]:
-    # □ を求める
     a = random.randint(2, 20)
     b = random.randint(2, 20)
     op = random.choice(["+", "-", "×", "÷"])
-    # □ op a = b 形式
     if op == "+":
         x = b - a
     elif op == "-":
@@ -375,7 +353,6 @@ def gen_inverse_basic() -> Tuple[str, str]:
     return f"□ {op} {a} = {b} の □ を求めよ。", f"{x}"
 
 def gen_prop_basic(hard: bool=False) -> Tuple[str, str]:
-    # 比例・反比例 y = kx, xy = k
     mode = random.choice(["比例", "反比例"])
     if mode == "比例":
         k = random.randint(1, 9)
@@ -409,31 +386,26 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
         if grade == "小3" and field == "整数のたし算・ひき算":
             digits = [2, 2, 3, 4, 5][level - 1]
             terms = [2, 3, 3, 4, 5][level - 1]
-            q, a = gen_sum_diff(digits, terms)
-            add(q, a, preset)
+            q, a = gen_sum_diff(digits, terms); add(q, a, preset)
 
         elif grade == "小3" and field == "かけ算の筆算":
             pairs = [(2,1),(3,1),(2,2),(3,2),(3,3)]
             a_d, b_d = pairs[level - 1]
-            q, a = gen_mul(a_d, b_d)
-            add(q, a, preset)
+            q, a = gen_mul(a_d, b_d); add(q, a, preset)
 
         elif grade == "小3" and field == "わり算（あまりあり）":
             rngs = [(2,50),(10,200),(50,1000),(200,5000),(1000,20000)]
             lo, hi = rngs[level - 1]
-            q, a = gen_div_with_remainder(lo, hi)
-            add(q, a, preset)
+            q, a = gen_div_with_remainder(lo, hi); add(q, a, preset)
 
         elif grade == "小4" and field == "大きな数と筆算":
             if level in (1,2,3):
                 digits = [4,5,6][level - 1]
                 q, a = gen_large_sumdiff(digits)
-                add(q, a, preset)
             else:
-                # 積
-                pairs = [(3,3),(4,4)]  # 2項の積（桁は例示）
+                pairs = [(3,3),(4,4)]
                 q, a = gen_mul(*pairs[level - 4])
-                add(q, a, preset)
+            add(q, a, preset)
 
         elif grade == "小4" and field == "小数の四則":
             if level == 1:
@@ -445,7 +417,6 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
             elif level == 4:
                 q, a = gen_decimal_muldiv(2)
             else:
-                # 3項混合
                 q1, a1 = gen_decimal_addsub(1)
                 q2, a2 = gen_decimal_muldiv(1)
                 q = q1.replace("=", "") + " と " + q2
@@ -458,7 +429,6 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
             elif level == 2:
                 q, a = gen_gcd_range(50, 200, 2)
             elif level == 3:
-                # 素因数分解を意識
                 q, a = gen_gcd_range(10, 999, 2)
             elif level == 4:
                 q, a = gen_lcm_range(10, 50, 3)
@@ -476,7 +446,6 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
             elif level == 4:
                 q, a = gen_fraction_addsub(2, 3)
             else:
-                # 文章題（簡単化：式を文章化）
                 q0, a0 = gen_fraction_addsub(1, 2)
                 q = f"りんごの重さは {q0.replace(' =','')} とします。合計の重さは？"
                 a = a0
@@ -484,21 +453,13 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
 
         elif grade == "小5" and field == "分数の四則混合":
             terms = 2 if level == 1 else 3
-            q, a = gen_frac_mixed_ops(terms)
-            add(q, a, preset)
+            q, a = gen_frac_mixed_ops(terms); add(q, a, preset)
 
         elif grade == "小5" and field == "小数×分数・分数×分数":
-            q, a = gen_fraction_mixed()
-            add(q, a, preset)
+            q, a = gen_fraction_mixed(); add(q, a, preset)
 
         elif grade == "小5" and field == "割合の基本計算":
-            mode_map = {
-                1: "of/up/down",
-                2: "of/up/down",
-                3: "reverse",
-                4: "chain",
-                5: "chain",
-            }
+            mode_map = {1: "of/up/down", 2: "of/up/down", 3: "reverse", 4: "chain", 5: "chain"}
             m = mode_map[level]
             if m == "of/up/down":
                 q, a = gen_percent_basic(random.choice(["of", "up", "down"]))
@@ -508,16 +469,13 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
 
         elif grade == "小5" and field == "比の基本計算":
             hard = level >= 4
-            q, a = gen_ratio_basic(hard=hard)
-            add(q, a, preset)
+            q, a = gen_ratio_basic(hard=hard); add(q, a, preset)
 
         elif grade == "小6" and field == "分数・小数の複合計算":
-            q, a = gen_frac_decimal_combo()
-            add(q, a, preset)
+            q, a = gen_frac_decimal_combo(); add(q, a, preset)
 
         elif grade == "小6" and field == "逆算（□を求める）":
-            q, a = gen_inverse_basic()
-            add(q, a, preset)
+            q, a = gen_inverse_basic(); add(q, a, preset)
 
         elif grade == "小6" and field == "最大公約数・最小公倍数":
             if level <= 3:
@@ -528,8 +486,7 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
 
         elif grade == "小6" and field == "比例・反比例の基本計算":
             hard = level >= 4
-            q, a = gen_prop_basic(hard=hard)
-            add(q, a, preset)
+            q, a = gen_prop_basic(hard=hard); add(q, a, preset)
 
     return rows
 
@@ -540,36 +497,52 @@ st.title("🧮 算数ドリルジェネレータ")
 
 # URLクエリ（新API）
 qp = st.query_params
-default_grade = qp.get("grade", "小3")
-default_field = qp.get("field", "整数のたし算・ひき算")
-default_level = int(qp.get("level", 1))
-default_n = int(qp.get("n", 10))
-default_seed = int(qp.get("seed", 0)) if str(qp.get("seed", "")).isdigit() else 0
+
+def qp_str(key: str, default: str) -> str:
+    try:
+        v = qp.get(key, default)
+        return v if isinstance(v, str) else default
+    except Exception:
+        return default
+
+def qp_int(key: str, default: int) -> int:
+    v = qp_str(key, str(default))
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+default_grade = qp_str("grade", "小3")
+default_field = qp_str("field", "整数のたし算・ひき算")
+default_level = qp_int("level", 1)
+default_n = qp_int("n", 10)
+default_seed = qp_int("seed", 0)
 
 with st.sidebar:
     st.header("出題設定")
     grade = st.selectbox("学年", list(PRESET_TABLE.keys()), index=list(PRESET_TABLE.keys()).index(default_grade))
-    field = st.selectbox("分野", list(PRESET_TABLE[grade].keys()),
-                         index=list(PRESET_TABLE[grade].keys()).index(default_field)
-                         if default_field in PRESET_TABLE[grade] else 0)
+    field_list = list(PRESET_TABLE[grade].keys())
+    field = st.selectbox("分野", field_list, index=field_list.index(default_field) if default_field in field_list else 0)
     level = st.slider("難度", 1, 5, value=default_level)
     n = st.number_input("出題数", min_value=1, max_value=200, value=default_n, step=1)
     seed = st.number_input("乱数シード（再現用）", min_value=0, max_value=10_000_000, value=default_seed, step=1)
     go = st.button("🧪 生成する", type="primary")
 
-    # 日本語フォント警告（任意）
     font_path, _ = find_japanese_font()
     if not font_path:
-        st.warning("PDFで日本語を表示するには、日本語フォント（例: assets/NotoSansJP-Regular.ttf）を配置してください。\n現状は '?' 置換のフォールバックになります。")
+        st.warning("PDFで日本語を表示するには、日本語フォント（例: assets/NotoSansJP-Regular.ttf）を配置してください。現状は '?' 置換のフォールバックです。")
 
 # クエリ反映
-st.query_params.update({
-    "grade": grade,
-    "field": field,
-    "level": str(level),
-    "n": str(n),
-    "seed": str(seed),
-})
+try:
+    st.query_params.update({
+        "grade": grade,
+        "field": field,
+        "level": str(level),
+        "n": str(n),
+        "seed": str(seed),
+    })
+except Exception:
+    pass
 
 # 生成処理
 if go:
@@ -581,7 +554,7 @@ if go:
     st.subheader("出題結果")
     st.dataframe(df, use_container_width=True)
 
-    # ダウンロード（CSV）
+    # CSV
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("📥 CSVをダウンロード", data=csv, file_name="problems.csv", mime="text/csv")
 
@@ -599,6 +572,5 @@ if go:
         problems=[{"question": r["問題"], "answer": r["答え"], "meta": r["プリセット"]} for _, r in df.iterrows()],
     )
     st.download_button("📄 PDFをダウンロード", data=pdf_bytes, file_name="drill.pdf", mime="application/pdf")
-
 else:
     st.info("左のサイドバーで条件を選んで「生成する」を押してください。")
