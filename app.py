@@ -96,20 +96,24 @@ def lcmm(*args: int) -> int:
 # ------------------------------------------------------------------------------
 # PDF: 日本語フォント対応 + フォールバック
 # ------------------------------------------------------------------------------
-def find_japanese_font() -> Tuple[Union[str, None], int]:
+def find_japanese_font() -> Union[str, None]:
+    """__file__ を基準に assets のフォントを確実に探す。無ければシステムの候補も見る。"""
+    here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
-        ("assets/NotoSansJP-Regular.ttf", 0),
-        ("assets/NotoSansJP-Regular.otf", 0),
-        ("fonts/NotoSansJP-Regular.ttf", 0),
-        ("fonts/NotoSansJP-Regular.otf", 0),
-        ("/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf", 0),
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
-        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0),
+        os.path.join(here, "assets", "NotoSansJP-Regular.ttf"),
+        os.path.join(here, "assets", "NotoSansJP-Regular.otf"),
+        # CWD 相対（念のため）
+        "assets/NotoSansJP-Regular.ttf",
+        "assets/NotoSansJP-Regular.otf",
+        # よくあるシステム配置
+        "/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     ]
-    for path, idx in candidates:
-        if os.path.exists(path):
-            return path, idx
-    return None, 0
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
 
 def ascii_safe(text: str) -> str:
     # 日本語フォントが無いときは '?' 置換でASCII化（落ちないことを最優先）
@@ -122,7 +126,6 @@ def to_bytes(x) -> bytes:
     """
     if isinstance(x, (bytes, bytearray)):
         return bytes(x)
-    # 万一 str の場合のみエンコード
     return x.encode("latin-1", "ignore")
 
 def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> bytes:
@@ -130,16 +133,23 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    font_path, ttc_index = find_japanese_font()
-    use_unicode = font_path is not None
+    font_path = find_japanese_font()
+    use_unicode = False
 
-    if use_unicode:
-        pdf.add_font("JP", "", font_path, uni=True, ttc_index=ttc_index)
-        pdf.set_font("JP", size=16)
-        write = lambda s: s
+    if font_path:
+        try:
+            # fpdf2==2.8.x 互換の登録（ttc_index などは使わない）
+            pdf.add_font("JP", "", font_path, uni=True)
+            pdf.set_font("JP", size=16)
+            use_unicode = True
+        except Exception:
+            # フォント登録失敗時は英字フォールバック
+            pdf.set_font("Helvetica", size=16)
     else:
         pdf.set_font("Helvetica", size=16)
-        write = ascii_safe
+
+    # 日本語フォントが使えないときは ASCII 化して落ちないようにする
+    write = (lambda s: s) if use_unicode else ascii_safe
 
     # タイトル
     pdf.cell(0, 10, text=write(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -162,7 +172,6 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
             pdf.set_text_color(0, 0, 0)
         pdf.ln(2)
 
-    # ★ ここが修正ポイント：bytes/bytearray/str を全部吸収
     return to_bytes(pdf.output(dest="S"))
 
 # ------------------------------------------------------------------------------
@@ -528,8 +537,10 @@ with st.sidebar:
     seed = st.number_input("乱数シード（再現用）", min_value=0, max_value=10_000_000, value=default_seed, step=1)
     go = st.button("🧪 生成する", type="primary")
 
-    font_path, _ = find_japanese_font()
-    if not font_path:
+    detected_font = find_japanese_font()
+    if detected_font:
+        st.caption(f"📄 検出フォント: {detected_font}")
+    else:
         st.warning("PDFで日本語を表示するには、日本語フォント（例: assets/NotoSansJP-Regular.ttf）を配置してください。現状は '?' 置換のフォールバックです。")
 
 # クエリ反映
