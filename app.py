@@ -5,6 +5,7 @@ import os
 import math
 import random
 import fractions
+import re
 from typing import List, Dict, Tuple, Union
 
 import pandas as pd
@@ -160,7 +161,6 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
     for i, p in enumerate(problems, 1):
         q = p["question"]
         meta = p.get("meta", "")
-        # 問題のみ出力
         pdf.multi_cell(0, 7, text=write(f"Q{i}. {q}"))
         if meta:
             pdf.set_text_color(100, 100, 100)
@@ -179,6 +179,75 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
         pdf.cell(0, 6, text=write(f"Q{i}. {a}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     return to_bytes(pdf.output(dest="S"))
+
+# ------------------------------------------------------------------------------
+# ここから：答えに対するバリデーション（負数の除外、LCM=1の除外）
+# ------------------------------------------------------------------------------
+def answer_is_negative(ans: str) -> bool:
+    """負の答えかどうかを判定する。整数/小数/分数/『あまり』形式を想定。"""
+    s = str(ans).strip()
+
+    # 「q あまり r」形式（q をチェック）
+    if "あまり" in s:
+        try:
+            q_part = s.split("あまり")[0].strip()
+            q_val = int(q_part)
+            return q_val < 0
+        except Exception:
+            # うまく解釈できない場合は '-' の有無で簡易判定
+            return s.startswith("-")
+
+    # 比例・比などの「a:b」表現は負は生成していないのでスキップ
+    if ":" in s:
+        return False
+
+    # 分数（単純形）を判定
+    if re.fullmatch(r"-?\d+/\d+", s):
+        try:
+            fr = fractions.Fraction(s)
+            return fr < 0
+        except Exception:
+            return s.startswith("-")
+
+    # それ以外は数値として解釈できれば判定
+    try:
+        v = float(s)
+        # -0.0 を 0 とみなす
+        return v < -1e-12
+    except Exception:
+        # 数値に変換できない文字列（例：「x / y」）は負ではない前提
+        return False
+
+def is_lcm_context(grade: str, field: str, level: int) -> bool:
+    """倍数（最小公倍数）の出題文脈かを判定する。"""
+    # 小4「約数・倍数（計算）」のレベル4は LCM
+    if grade == "小4" and field == "約数・倍数（計算）" and level == 4:
+        return True
+    # 小6「最大公約数・最小公倍数」のレベル4-5は LCM
+    if grade == "小6" and field == "最大公約数・最小公倍数" and level >= 4:
+        return True
+    return False
+
+def lcm_answer_is_one(ans: str) -> bool:
+    """LCM の答えが 1 かどうかを判定（整数想定）。"""
+    try:
+        return int(str(ans).strip()) == 1
+    except Exception:
+        return False
+
+def generate_safe(gen_callable, *, grade: str, field: str, level: int, max_retry: int = 100) -> Tuple[str, str]:
+    """ジェネレータを呼び、負の答えや LCM=1 を除外して再生成する。"""
+    for _ in range(max_retry):
+        q, a = gen_callable()
+        # ② 負の答えの除外
+        if answer_is_negative(a):
+            continue
+        # ① 倍数問題（LCM）で答え=1 は除外
+        if is_lcm_context(grade, field, level) and lcm_answer_is_one(a):
+            continue
+        return q, a
+    # どうしても条件が満たせない場合は最後の生成を返す（安全策）
+    return q, a
 
 # ------------------------------------------------------------------------------
 # 出題ジェネレータ群
@@ -228,7 +297,7 @@ def gen_decimal_addsub(places: int) -> Tuple[str, str]:
 
 def gen_decimal_muldiv(places: int) -> Tuple[str, str]:
     def r():
-        return round(random.uniform(1, 50), places)
+        return round(random.uniform(0.5, 50), places)
     a, b = r(), r()
     op = random.choice(["×", "÷"])
     if op == "×":
@@ -389,7 +458,7 @@ def gen_prop_basic(hard: bool=False) -> Tuple[str, str]:
             return f"xy = {k}。x={x} のとき y は？", f"{round(y,2)}"
 
 # ------------------------------------------------------------------------------
-# カリキュラム → 実際のジェネレータにマッピング
+# カリキュラム → 実際のジェネレータにマッピング（安全版）
 # ------------------------------------------------------------------------------
 def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]:
     rows = []
@@ -402,107 +471,126 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
         if grade == "小3" and field == "整数のたし算・ひき算":
             digits = [2, 2, 3, 4, 5][level - 1]
             terms = [2, 3, 3, 4, 5][level - 1]
-            q, a = gen_sum_diff(digits, terms); add(q, a, preset)
+            q, a = generate_safe(lambda: gen_sum_diff(digits, terms), grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小3" and field == "かけ算の筆算":
             pairs = [(2,1),(3,1),(2,2),(3,2),(3,3)]
             a_d, b_d = pairs[level - 1]
-            q, a = gen_mul(a_d, b_d); add(q, a, preset)
+            q, a = generate_safe(lambda: gen_mul(a_d, b_d), grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小3" and field == "わり算（あまりあり）":
             rngs = [(2,50),(10,200),(50,1000),(200,5000),(1000,20000)]
             lo, hi = rngs[level - 1]
-            q, a = gen_div_with_remainder(lo, hi); add(q, a, preset)
+            q, a = generate_safe(lambda: gen_div_with_remainder(lo, hi), grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小4" and field == "大きな数と筆算":
             if level in (1,2,3):
                 digits = [4,5,6][level - 1]
-                q, a = gen_large_sumdiff(digits)
+                q, a = generate_safe(lambda: gen_large_sumdiff(digits), grade=grade, field=field, level=level)
             else:
                 pairs = [(3,3),(4,4)]
-                q, a = gen_mul(*pairs[level - 4])
+                q, a = generate_safe(lambda: gen_mul(*pairs[level - 4]), grade=grade, field=field, level=level)
             add(q, a, preset)
 
         elif grade == "小4" and field == "小数の四則":
             if level == 1:
-                q, a = gen_decimal_addsub(1)
+                q, a = generate_safe(lambda: gen_decimal_addsub(1), grade=grade, field=field, level=level)
             elif level == 2:
-                q, a = gen_decimal_addsub(2)
+                q, a = generate_safe(lambda: gen_decimal_addsub(2), grade=grade, field=field, level=level)
             elif level == 3:
-                q, a = gen_decimal_muldiv(1)
+                q, a = generate_safe(lambda: gen_decimal_muldiv(1), grade=grade, field=field, level=level)
             elif level == 4:
-                q, a = gen_decimal_muldiv(2)
+                q, a = generate_safe(lambda: gen_decimal_muldiv(2), grade=grade, field=field, level=level)
             else:
-                q1, a1 = gen_decimal_addsub(1)
-                q2, a2 = gen_decimal_muldiv(1)
-                q = q1.replace("=", "") + " と " + q2
-                a = f"{a1} / {a2}"
+                # 答えが「a1 / a2」文字列の複合は負の可能性低いが一応セーフガード
+                def gen_mix():
+                    q1, a1 = gen_decimal_addsub(1)
+                    q2, a2 = gen_decimal_muldiv(1)
+                    q = q1.replace("=", "") + " と " + q2
+                    a = f"{a1} / {a2}"
+                    return q, a
+                q, a = generate_safe(gen_mix, grade=grade, field=field, level=level)
             add(q, a, preset)
 
         elif grade == "小4" and field == "約数・倍数（計算）":
             if level == 1:
-                q, a = gen_gcd_range(30, 100, 2)
+                q, a = generate_safe(lambda: gen_gcd_range(30, 100, 2), grade=grade, field=field, level=level)
             elif level == 2:
-                q, a = gen_gcd_range(50, 200, 2)
+                q, a = generate_safe(lambda: gen_gcd_range(50, 200, 2), grade=grade, field=field, level=level)
             elif level == 3:
-                q, a = gen_gcd_range(10, 999, 2)
+                q, a = generate_safe(lambda: gen_gcd_range(10, 999, 2), grade=grade, field=field, level=level)
             elif level == 4:
-                q, a = gen_lcm_range(10, 50, 3)
+                q, a = generate_safe(lambda: gen_lcm_range(10, 50, 3), grade=grade, field=field, level=level)
             else:
-                q, a = gen_gcd_range(10, 200, 3)
+                q, a = generate_safe(lambda: gen_gcd_range(10, 200, 3), grade=grade, field=field, level=level)
             add(q, a, preset)
 
         elif grade == "小4" and field == "分数のたし算・ひき算":
             if level == 1:
-                q, a = gen_fraction_addsub(1, 2)
+                q, a = generate_safe(lambda: gen_fraction_addsub(1, 2), grade=grade, field=field, level=level)
             elif level == 2:
-                q, a = gen_fraction_addsub(2, 2)
+                q, a = generate_safe(lambda: gen_fraction_addsub(2, 2), grade=grade, field=field, level=level)
             elif level == 3:
-                q, a = gen_fraction_addsub(1, 3)
+                q, a = generate_safe(lambda: gen_fraction_addsub(1, 3), grade=grade, field=field, level=level)
             elif level == 4:
-                q, a = gen_fraction_addsub(2, 3)
+                q, a = generate_safe(lambda: gen_fraction_addsub(2, 3), grade=grade, field=field, level=level)
             else:
-                q0, a0 = gen_fraction_addsub(1, 2)
-                q = f"りんごの重さは {q0.replace(' =','')} とします。合計の重さは？"
-                a = a0
+                def gen_story():
+                    q0, a0 = gen_fraction_addsub(1, 2)
+                    q = f"りんごの重さは {q0.replace(' =','')} とします。合計の重さは？"
+                    a = a0
+                    return q, a
+                q, a = generate_safe(gen_story, grade=grade, field=field, level=level)
             add(q, a, preset)
 
         elif grade == "小5" and field == "分数の四則混合":
             terms = 2 if level == 1 else 3
-            q, a = gen_frac_mixed_ops(terms); add(q, a, preset)
+            q, a = generate_safe(lambda: gen_frac_mixed_ops(terms), grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小5" and field == "小数×分数・分数×分数":
-            q, a = gen_fraction_mixed(); add(q, a, preset)
+            q, a = generate_safe(gen_fraction_mixed, grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小5" and field == "割合の基本計算":
             mode_map = {1: "of/up/down", 2: "of/up/down", 3: "reverse", 4: "chain", 5: "chain"}
             m = mode_map[level]
             if m == "of/up/down":
-                q, a = gen_percent_basic(random.choice(["of", "up", "down"]))
+                q, a = generate_safe(lambda: gen_percent_basic(random.choice(["of", "up", "down"])),
+                                     grade=grade, field=field, level=level)
             else:
-                q, a = gen_percent_basic(m)
+                q, a = generate_safe(lambda: gen_percent_basic(m), grade=grade, field=field, level=level)
             add(q, a, preset)
 
         elif grade == "小5" and field == "比の基本計算":
             hard = level >= 4
-            q, a = gen_ratio_basic(hard=hard); add(q, a, preset)
+            q, a = generate_safe(lambda: gen_ratio_basic(hard=hard), grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小6" and field == "分数・小数の複合計算":
-            q, a = gen_frac_decimal_combo(); add(q, a, preset)
+            q, a = generate_safe(gen_frac_decimal_combo, grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小6" and field == "逆算（□を求める）":
-            q, a = gen_inverse_basic(); add(q, a, preset)
+            q, a = generate_safe(gen_inverse_basic, grade=grade, field=field, level=level)
+            add(q, a, preset)
 
         elif grade == "小6" and field == "最大公約数・最小公倍数":
             if level <= 3:
-                q, a = gen_gcd_range(10, 200, random.choice([2,3]))
+                q, a = generate_safe(lambda: gen_gcd_range(10, 200, random.choice([2,3])),
+                                     grade=grade, field=field, level=level)
             else:
-                q, a = gen_lcm_range(10, 60, random.choice([2,3]))
+                q, a = generate_safe(lambda: gen_lcm_range(10, 60, random.choice([2,3])),
+                                     grade=grade, field=field, level=level)
             add(q, a, preset)
 
         elif grade == "小6" and field == "比例・反比例の基本計算":
             hard = level >= 4
-            q, a = gen_prop_basic(hard=hard); add(q, a, preset)
+            q, a = generate_safe(lambda: gen_prop_basic(hard=hard), grade=grade, field=field, level=level)
+            add(q, a, preset)
 
     return rows
 
