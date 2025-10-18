@@ -6,7 +6,7 @@ import math
 import random
 import fractions
 import re
-from typing import List, Dict, Tuple, Union
+from typing import List, Dict, Tuple, Union, Optional
 
 import pandas as pd
 import streamlit as st
@@ -100,7 +100,6 @@ def lcmm(*args: int) -> int:
 # PDF: 日本語フォント対応 + フォールバック
 # ------------------------------------------------------------------------------
 def find_japanese_font() -> Union[str, None]:
-    """__file__ を基準に assets のフォントを確実に探す。無ければシステムの候補も見る。"""
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
         os.path.join(here, "assets", "NotoSansJP-Regular.ttf"),
@@ -179,10 +178,8 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
 # バリデーション（負数の除外、LCM=1除外、GCD=1除外）
 # ------------------------------------------------------------------------------
 def answer_is_negative(ans: str) -> bool:
-    """負の答えかどうかを判定する。整数/小数/分数/『あまり』形式に対応。"""
     s = str(ans).strip()
 
-    # 「q あまり r」形式（商を確認）
     if "あまり" in s:
         try:
             q_part = s.split("あまり")[0].strip()
@@ -191,11 +188,9 @@ def answer_is_negative(ans: str) -> bool:
         except Exception:
             return s.startswith("-")
 
-    # 比の a:b は非負のみを生成しているため除外対象外
     if ":" in s:
         return False
 
-    # 分数
     if re.fullmatch(r"-?\d+/\d+", s):
         try:
             fr = fractions.Fraction(s)
@@ -203,7 +198,6 @@ def answer_is_negative(ans: str) -> bool:
         except Exception:
             return s.startswith("-")
 
-    # それ以外は数値化して判定
     try:
         v = float(s)
         return v < -1e-12
@@ -211,7 +205,6 @@ def answer_is_negative(ans: str) -> bool:
         return False
 
 def is_lcm_context(grade: str, field: str, level: int) -> bool:
-    """最小公倍数の文脈判定。"""
     if grade == "小4" and field == "約数・倍数（計算）" and level == 4:
         return True
     if grade == "小6" and field == "最大公約数・最小公倍数" and level >= 4:
@@ -219,7 +212,6 @@ def is_lcm_context(grade: str, field: str, level: int) -> bool:
     return False
 
 def is_gcd_context(grade: str, field: str, level: int) -> bool:
-    """最大公約数の文脈判定。"""
     if grade == "小4" and field == "約数・倍数（計算）" and level in (1, 2, 3, 5):
         return True
     if grade == "小6" and field == "最大公約数・最小公倍数" and level <= 3:
@@ -239,22 +231,17 @@ def gcd_answer_is_one(ans: str) -> bool:
         return False
 
 def generate_safe(gen_callable, *, grade: str, field: str, level: int, max_retry: int = 100) -> Tuple[str, str]:
-    """ジェネレータを呼び、負の答え／LCM=1／GCD=1 を除外して再生成する。"""
     last = ("", "")
     for _ in range(max_retry):
         q, a = gen_callable()
         last = (q, a)
-        # ② 負の答えの除外
         if answer_is_negative(a):
             continue
-        # ① LCM=1 の除外
         if is_lcm_context(grade, field, level) and lcm_answer_is_one(a):
             continue
-        # ③ GCD=1 の除外（今回の追加要件）
         if is_gcd_context(grade, field, level) and gcd_answer_is_one(a):
             continue
         return q, a
-    # 最大リトライ後は最後の生成を返す（理論上ほぼ到達しない）
     return last
 
 # ------------------------------------------------------------------------------
@@ -602,6 +589,104 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
     return rows
 
 # ------------------------------------------------------------------------------
+# 採点用：答えの正規化と比較
+# ------------------------------------------------------------------------------
+_DIV_EXPR_RE = re.compile(r"^\s*([-+]?\d+(?:\.\d+)?)\s*/\s*([-+]?\d+(?:\.\d+)?)\s*$")
+_FRAC_RE = re.compile(r"^\s*([-+]?\d+)\s*/\s*(\d+)\s*$")
+_RATIO_RE = re.compile(r"^\s*([-+]?\d+)\s*:\s*([-+]?\d+)\s*$")
+_REMAINDER_RE = re.compile(r"^\s*([-+]?\d+)\s*あまり\s*([-+]?\d+)\s*$")
+
+def _parse_number_like(s: str) -> Optional[float]:
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def _parse_fraction(s: str) -> Optional[fractions.Fraction]:
+    m = _FRAC_RE.match(s)
+    if not m:
+        return None
+    num = int(m.group(1)); den = int(m.group(2))
+    if den == 0:
+        return None
+    return fractions.Fraction(num, den)
+
+def _parse_ratio(s: str) -> Optional[Tuple[int, int]]:
+    m = _RATIO_RE.match(s)
+    if not m:
+        return None
+    a = int(m.group(1)); b = int(m.group(2))
+    if b == 0:
+        return None
+    g = math.gcd(a, b)
+    a //= g; b //= g
+    # 比は正に限定しているため負はここでは扱わない
+    return (a, b)
+
+def _parse_remainder(s: str) -> Optional[Tuple[int, int]]:
+    m = _REMAINDER_RE.match(s)
+    if not m:
+        return None
+    q = int(m.group(1)); r = int(m.group(2))
+    return (q, r)
+
+def compare_answers(expected: str, user: str, tol: float = 1e-6) -> bool:
+    es = str(expected).strip()
+    us = str(user).strip()
+    if us == "":
+        return False
+
+    # 余りつき
+    e_rem = _parse_remainder(es)
+    if e_rem is not None:
+        u_rem = _parse_remainder(us)
+        return (u_rem is not None) and (e_rem == u_rem)
+
+    # 比 a:b （ユーザは同値比OK）
+    e_ratio = _parse_ratio(es)
+    if e_ratio is not None:
+        u_ratio = _parse_ratio(us)
+        return (u_ratio is not None) and (e_ratio == u_ratio)
+
+    # 真分数（既約でなくてもOK）
+    e_frac = _parse_fraction(es)
+    if e_frac is not None:
+        u_frac = _parse_fraction(us)
+        if u_frac is not None:
+            return e_frac == u_frac
+        # 小数で答えてもOK
+        u_num = _parse_number_like(us)
+        if u_num is not None:
+            return abs(float(e_frac) - u_num) <= tol
+        return False
+
+    # 「x / y」式（小数の四則レベル5）→ 数値比較も許容
+    m = _DIV_EXPR_RE.match(es)
+    if m:
+        ex = float(m.group(1)) / float(m.group(2))
+        # ユーザーが式で入れてきたら評価、数値でもOK
+        mu = _DIV_EXPR_RE.match(us)
+        if mu:
+            ux = float(mu.group(1)) / float(mu.group(2))
+            return abs(ex - ux) <= tol
+        u_num = _parse_number_like(us)
+        return (u_num is not None) and (abs(ex - u_num) <= tol)
+
+    # ふつうの数値（整数・小数）
+    e_num = _parse_number_like(es)
+    if e_num is not None:
+        u_num = _parse_number_like(us)
+        if u_num is None:
+            # ユーザが a/b で入れた場合も許容
+            u_frac = _parse_fraction(us)
+            if u_frac is not None:
+                u_num = float(u_frac)
+        return (u_num is not None) and (abs(e_num - u_num) <= tol)
+
+    # それ以外は完全一致で比較（ほぼ到達しない）
+    return es == us
+
+# ------------------------------------------------------------------------------
 # UI
 # ------------------------------------------------------------------------------
 st.title("🧮 算数ドリルジェネレータ")
@@ -665,6 +750,12 @@ if go:
     rows = generate_by_preset(grade, field, level, n)
     df = pd.DataFrame(rows, columns=["問題", "答え", "プリセット"])
 
+    # セッションに保持（採点に使用）
+    st.session_state["problems_df"] = df
+    st.session_state["meta"] = {
+        "grade": grade, "field": field, "level": level, "n": n, "seed": seed
+    }
+
     st.subheader("出題結果")
     st.dataframe(df, use_container_width=True)
 
@@ -686,5 +777,46 @@ if go:
         problems=[{"question": r["問題"], "answer": r["答え"], "meta": r["プリセット"]} for _, r in df.iterrows()],
     )
     st.download_button("📄 PDFをダウンロード", data=pdf_bytes, file_name="drill.pdf", mime="application/pdf")
+
+# --------------------------- アプリ内演習（採点付き） ---------------------------
+st.markdown("## 📝 アプリ内演習")
+problems_df: Optional[pd.DataFrame] = st.session_state.get("problems_df")
+
+if problems_df is None or problems_df.empty:
+    st.info("左のサイドバーで条件を選んで「生成する」を押すと、ここに演習が表示される。")
 else:
-    st.info("左のサイドバーで条件を選んで「生成する」を押すべきである。")
+    # 入力欄の描画
+    user_inputs = {}
+    show_answers = st.checkbox("模範解答を表示する（採点結果と併せて）", value=False)
+    st.caption("※ 分数は `a/b`、余りつきは `q あまり r`、比は `a:b` で入力する。小数の丸め誤差は自動で吸収する。")
+
+    for i, row in problems_df.reset_index(drop=True).iterrows():
+        st.markdown(f"**Q{i+1}. {row['問題']}**")
+        user_inputs[i] = st.text_input("あなたの解答", key=f"ans_{i}", label_visibility="collapsed")
+        if show_answers:
+            st.caption(f"模範解答: {row['答え']}")
+        st.divider()
+
+    if st.button("✅ 全問採点"):
+        results = []
+        correct_count = 0
+        for i, row in problems_df.reset_index(drop=True).iterrows():
+            ok = compare_answers(str(row["答え"]), user_inputs.get(i, ""))
+            results.append("◯" if ok else "✕")
+            if ok:
+                correct_count += 1
+
+        score_col1, score_col2 = st.columns([1, 3])
+        with score_col1:
+            st.metric(label="正答数", value=f"{correct_count} / {len(problems_df)}")
+        with score_col2:
+            st.progress(correct_count / max(1, len(problems_df)))
+
+        # 詳細結果
+        out = problems_df.copy()
+        out.insert(0, "採点", results)
+        out.insert(2, "あなたの解答", [user_inputs.get(i, "") for i in range(len(problems_df))])
+        st.dataframe(out, use_container_width=True)
+else:
+    # go=False でまだ生成していない場合
+    pass
