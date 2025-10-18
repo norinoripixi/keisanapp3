@@ -1,10 +1,12 @@
 # app.py
 # -*- coding: utf-8 -*-
+
 import os
 import math
 import random
 import fractions
 from typing import List, Dict, Tuple, Union
+
 import pandas as pd
 import streamlit as st
 from fpdf import FPDF
@@ -35,17 +37,13 @@ PRESET_TABLE: Dict[str, Dict[str, List[str]]] = {
             "4桁・2項の和差算", "5桁・2項の和差算", "6桁・2項の和差算", "3桁・2項の積", "4桁・2項の積"
         ],
         "小数の四則": [
-            "小数第1位の2項の和差算", "小数第2位の2項の和差算",
-            "小数第1位の2項の積商算", "小数第2位の2項の積商算",
-            "小数第1位の3項の和差積商混合算"
+            "小数第1位の2項の和差算", "小数第2位の2項の和差算", "小数第1位の2項の積商算", "小数第2位の2項の積商算", "小数第1位の3項の和差積商混合算"
         ],
         "約数・倍数（計算）": [
-            "30〜100くらいの小さい整数の公約数", "50〜200の整数の公約数",
-            "素因数分解を意識した数（2桁〜3桁）", "3つの数の公倍数", "3つの数の公約数"
+            "30〜100くらいの小さい整数の公約数", "50〜200の整数の公約数", "素因数分解を意識した数（2桁〜3桁）", "3つの数の公倍数", "3つの数の公約数"
         ],
         "分数のたし算・ひき算": [
-            "分母1桁・2項の和差算", "分母2桁・2項の和差算",
-            "分母1桁・3項の和差算", "分母2桁・3項の和差算", "文章題"
+            "分母1桁・2項の和差算", "分母2桁・2項の和差算", "分母1桁・3項の和差算", "分母2桁・3項の和差算", "文章題"
         ],
     },
     "小5": {
@@ -128,49 +126,57 @@ def to_bytes(x) -> bytes:
         return bytes(x)
     return x.encode("latin-1", "ignore")
 
+# ------------------------------------------------------------------------------
+# ★改良版★ PDF生成：1ページ目=問題、2ページ目=模範解答
+# ------------------------------------------------------------------------------
 def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> bytes:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
 
+    # --- フォント設定 ---
     font_path = find_japanese_font()
     use_unicode = False
-
     if font_path:
         try:
-            # fpdf2==2.8.x 互換の登録（ttc_index などは使わない）
             pdf.add_font("JP", "", font_path, uni=True)
             pdf.set_font("JP", size=16)
             use_unicode = True
         except Exception:
-            # フォント登録失敗時は英字フォールバック
             pdf.set_font("Helvetica", size=16)
     else:
         pdf.set_font("Helvetica", size=16)
 
-    # 日本語フォントが使えないときは ASCII 化して落ちないようにする
     write = (lambda s: s) if use_unicode else ascii_safe
 
-    # タイトル
+    # --- 1ページ目：問題のみ ---
+    pdf.add_page()
     pdf.cell(0, 10, text=write(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
     pdf.set_font_size(11)
     for k, v in header_meta.items():
         pdf.cell(0, 7, text=write(f"{k}: {v}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
     pdf.ln(2)
-    pdf.set_font_size(12)
 
-    # 問題
+    pdf.set_font_size(12)
     for i, p in enumerate(problems, 1):
-        q = p["question"]; a = p["answer"]; meta = p.get("meta", "")
+        q = p["question"]
+        meta = p.get("meta", "")
+        # 問題のみ出力
         pdf.multi_cell(0, 7, text=write(f"Q{i}. {q}"))
-        pdf.cell(0, 6, text=write(f"答え: {a}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         if meta:
             pdf.set_text_color(100, 100, 100)
             pdf.cell(0, 5, text=write(f"（プリセット: {meta}）"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_text_color(0, 0, 0)
-        pdf.ln(2)
+        pdf.ln(1)
+
+    # --- 2ページ目：模範解答 ---
+    pdf.add_page()
+    pdf.set_font_size(16)
+    pdf.cell(0, 10, text=write("模範解答"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_font_size(12)
+
+    for i, p in enumerate(problems, 1):
+        a = p["answer"]
+        pdf.cell(0, 6, text=write(f"Q{i}. {a}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     return to_bytes(pdf.output(dest="S"))
 
@@ -213,14 +219,16 @@ def gen_large_sumdiff(digits: int) -> Tuple[str, str]:
     return f"{a} {op} {b} =", str(val)
 
 def gen_decimal_addsub(places: int) -> Tuple[str, str]:
-    def r(): return round(random.uniform(1, 100), places)
+    def r():
+        return round(random.uniform(1, 100), places)
     a, b = r(), r()
     op = random.choice(["+", "-"])
     val = round(a + b, places + 1) if op == "+" else round(a - b, places + 1)
     return f"{a:.{places}f} {op} {b:.{places}f} =", f"{val}"
 
 def gen_decimal_muldiv(places: int) -> Tuple[str, str]:
-    def r(): return round(random.uniform(1, 50), places)
+    def r():
+        return round(random.uniform(1, 50), places)
     a, b = r(), r()
     op = random.choice(["×", "÷"])
     if op == "×":
@@ -390,7 +398,6 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
         rows.append({"問題": q, "答え": a, "プリセット": preset})
 
     preset = PRESET_TABLE[grade][field][level - 1]
-
     for _ in range(n):
         if grade == "小3" and field == "整数のたし算・ひき算":
             digits = [2, 2, 3, 4, 5][level - 1]
@@ -529,19 +536,21 @@ default_seed = qp_int("seed", 0)
 
 with st.sidebar:
     st.header("出題設定")
-    grade = st.selectbox("学年", list(PRESET_TABLE.keys()), index=list(PRESET_TABLE.keys()).index(default_grade))
+    grade = st.selectbox("学年", list(PRESET_TABLE.keys()),
+                         index=list(PRESET_TABLE.keys()).index(default_grade))
     field_list = list(PRESET_TABLE[grade].keys())
-    field = st.selectbox("分野", field_list, index=field_list.index(default_field) if default_field in field_list else 0)
+    field = st.selectbox("分野", field_list,
+                         index=field_list.index(default_field) if default_field in field_list else 0)
     level = st.slider("難度", 1, 5, value=default_level)
     n = st.number_input("出題数", min_value=1, max_value=200, value=default_n, step=1)
     seed = st.number_input("乱数シード（再現用）", min_value=0, max_value=10_000_000, value=default_seed, step=1)
     go = st.button("🧪 生成する", type="primary")
 
-    detected_font = find_japanese_font()
-    if detected_font:
-        st.caption(f"📄 検出フォント: {detected_font}")
-    else:
-        st.warning("PDFで日本語を表示するには、日本語フォント（例: assets/NotoSansJP-Regular.ttf）を配置してください。現状は '?' 置換のフォールバックです。")
+detected_font = find_japanese_font()
+if detected_font:
+    st.caption(f"📄 検出フォント: {detected_font}")
+else:
+    st.warning("PDFで日本語を表示するには、日本語フォント（例: assets/NotoSansJP-Regular.ttf）を配置すべきである。現状は '?' 置換のフォールバックである。")
 
 # クエリ反映
 try:
@@ -558,7 +567,6 @@ except Exception:
 # 生成処理
 if go:
     random.seed(seed)
-
     rows = generate_by_preset(grade, field, level, n)
     df = pd.DataFrame(rows, columns=["問題", "答え", "プリセット"])
 
@@ -584,4 +592,4 @@ if go:
     )
     st.download_button("📄 PDFをダウンロード", data=pdf_bytes, file_name="drill.pdf", mime="application/pdf")
 else:
-    st.info("左のサイドバーで条件を選んで「生成する」を押してください。")
+    st.info("左のサイドバーで条件を選んで「生成する」を押すべきである。")
