@@ -41,7 +41,11 @@ PRESET_TABLE: Dict[str, Dict[str, List[str]]] = {
             "小数第1位の2項の和差算", "小数第2位の2項の和差算", "小数第1位の2項の積商算", "小数第2位の2項の積商算", "小数第1位の3項の和差積商混合算"
         ],
         "約数・倍数（計算）": [
-            "30〜100くらいの小さい整数の公約数", "50〜200の整数の公約数", "素因数分解を意識した数（2桁〜3桁）", "3つの数の公倍数", "3つの数の公約数"
+            "30〜100くらいの小さい整数の公約数",   # L1: GCD
+            "50〜200の整数の公約数",               # L2: GCD
+            "素因数分解を意識した数（2桁〜3桁）",   # L3: GCD
+            "3つの数の公倍数",                     # L4: LCM
+            "3つの数の公約数"                      # L5: GCD
         ],
         "分数のたし算・ひき算": [
             "分母1桁・2項の和差算", "分母2桁・2項の和差算", "分母1桁・3項の和差算", "分母2桁・3項の和差算", "文章題"
@@ -56,7 +60,7 @@ PRESET_TABLE: Dict[str, Dict[str, List[str]]] = {
     "小6": {
         "分数・小数の複合計算": ["frac+decimal", "同上", "同上", "同上", "同上"],
         "逆算（□を求める）": ["基本", "同上", "同上", "同上", "同上"],
-        "最大公約数・最小公倍数": ["簡単", "同上", "同上", "高難度", "高難度"],
+        "最大公約数・最小公倍数": ["簡単", "同上", "同上", "高難度", "高難度"],  # L1-3: GCD, L4-5: LCM
         "比例・反比例の基本計算": ["基本", "同上", "同上", "難易度高", "難易度高"],
     },
 }
@@ -101,10 +105,8 @@ def find_japanese_font() -> Union[str, None]:
     candidates = [
         os.path.join(here, "assets", "NotoSansJP-Regular.ttf"),
         os.path.join(here, "assets", "NotoSansJP-Regular.otf"),
-        # CWD 相対（念のため）
         "assets/NotoSansJP-Regular.ttf",
         "assets/NotoSansJP-Regular.otf",
-        # よくあるシステム配置
         "/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
@@ -115,26 +117,20 @@ def find_japanese_font() -> Union[str, None]:
     return None
 
 def ascii_safe(text: str) -> str:
-    # 日本語フォントが無いときは '?' 置換でASCII化（落ちないことを最優先）
     return text.encode("latin-1", "replace").decode("latin-1")
 
 def to_bytes(x) -> bytes:
-    """
-    fpdf2>=2.5 では output(dest="S") は bytes/bytearray を返す。
-    古い互換では str の場合もあるので吸収する。
-    """
     if isinstance(x, (bytes, bytearray)):
         return bytes(x)
     return x.encode("latin-1", "ignore")
 
 # ------------------------------------------------------------------------------
-# ★改良版★ PDF生成：1ページ目=問題、2ページ目=模範解答
+# PDF生成：1ページ目=問題、2ページ目=模範解答
 # ------------------------------------------------------------------------------
 def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> bytes:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    # --- フォント設定 ---
     font_path = find_japanese_font()
     use_unicode = False
     if font_path:
@@ -149,7 +145,7 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
 
     write = (lambda s: s) if use_unicode else ascii_safe
 
-    # --- 1ページ目：問題のみ ---
+    # 1ページ目：問題
     pdf.add_page()
     pdf.cell(0, 10, text=write(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font_size(11)
@@ -168,12 +164,11 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
             pdf.set_text_color(0, 0, 0)
         pdf.ln(1)
 
-    # --- 2ページ目：模範解答 ---
+    # 2ページ目：解答
     pdf.add_page()
     pdf.set_font_size(16)
     pdf.cell(0, 10, text=write("模範解答"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font_size(12)
-
     for i, p in enumerate(problems, 1):
         a = p["answer"]
         pdf.cell(0, 6, text=write(f"Q{i}. {a}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -181,27 +176,26 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
     return to_bytes(pdf.output(dest="S"))
 
 # ------------------------------------------------------------------------------
-# ここから：答えに対するバリデーション（負数の除外、LCM=1の除外）
+# バリデーション（負数の除外、LCM=1除外、GCD=1除外）
 # ------------------------------------------------------------------------------
 def answer_is_negative(ans: str) -> bool:
-    """負の答えかどうかを判定する。整数/小数/分数/『あまり』形式を想定。"""
+    """負の答えかどうかを判定する。整数/小数/分数/『あまり』形式に対応。"""
     s = str(ans).strip()
 
-    # 「q あまり r」形式（q をチェック）
+    # 「q あまり r」形式（商を確認）
     if "あまり" in s:
         try:
             q_part = s.split("あまり")[0].strip()
             q_val = int(q_part)
             return q_val < 0
         except Exception:
-            # うまく解釈できない場合は '-' の有無で簡易判定
             return s.startswith("-")
 
-    # 比例・比などの「a:b」表現は負は生成していないのでスキップ
+    # 比の a:b は非負のみを生成しているため除外対象外
     if ":" in s:
         return False
 
-    # 分数（単純形）を判定
+    # 分数
     if re.fullmatch(r"-?\d+/\d+", s):
         try:
             fr = fractions.Fraction(s)
@@ -209,45 +203,59 @@ def answer_is_negative(ans: str) -> bool:
         except Exception:
             return s.startswith("-")
 
-    # それ以外は数値として解釈できれば判定
+    # それ以外は数値化して判定
     try:
         v = float(s)
-        # -0.0 を 0 とみなす
         return v < -1e-12
     except Exception:
-        # 数値に変換できない文字列（例：「x / y」）は負ではない前提
         return False
 
 def is_lcm_context(grade: str, field: str, level: int) -> bool:
-    """倍数（最小公倍数）の出題文脈かを判定する。"""
-    # 小4「約数・倍数（計算）」のレベル4は LCM
+    """最小公倍数の文脈判定。"""
     if grade == "小4" and field == "約数・倍数（計算）" and level == 4:
         return True
-    # 小6「最大公約数・最小公倍数」のレベル4-5は LCM
     if grade == "小6" and field == "最大公約数・最小公倍数" and level >= 4:
         return True
     return False
 
+def is_gcd_context(grade: str, field: str, level: int) -> bool:
+    """最大公約数の文脈判定。"""
+    if grade == "小4" and field == "約数・倍数（計算）" and level in (1, 2, 3, 5):
+        return True
+    if grade == "小6" and field == "最大公約数・最小公倍数" and level <= 3:
+        return True
+    return False
+
 def lcm_answer_is_one(ans: str) -> bool:
-    """LCM の答えが 1 かどうかを判定（整数想定）。"""
+    try:
+        return int(str(ans).strip()) == 1
+    except Exception:
+        return False
+
+def gcd_answer_is_one(ans: str) -> bool:
     try:
         return int(str(ans).strip()) == 1
     except Exception:
         return False
 
 def generate_safe(gen_callable, *, grade: str, field: str, level: int, max_retry: int = 100) -> Tuple[str, str]:
-    """ジェネレータを呼び、負の答えや LCM=1 を除外して再生成する。"""
+    """ジェネレータを呼び、負の答え／LCM=1／GCD=1 を除外して再生成する。"""
+    last = ("", "")
     for _ in range(max_retry):
         q, a = gen_callable()
+        last = (q, a)
         # ② 負の答えの除外
         if answer_is_negative(a):
             continue
-        # ① 倍数問題（LCM）で答え=1 は除外
+        # ① LCM=1 の除外
         if is_lcm_context(grade, field, level) and lcm_answer_is_one(a):
             continue
+        # ③ GCD=1 の除外（今回の追加要件）
+        if is_gcd_context(grade, field, level) and gcd_answer_is_one(a):
+            continue
         return q, a
-    # どうしても条件が満たせない場合は最後の生成を返す（安全策）
-    return q, a
+    # 最大リトライ後は最後の生成を返す（理論上ほぼ到達しない）
+    return last
 
 # ------------------------------------------------------------------------------
 # 出題ジェネレータ群
@@ -505,7 +513,6 @@ def generate_by_preset(grade: str, field: str, level: int, n: int) -> List[Dict]
             elif level == 4:
                 q, a = generate_safe(lambda: gen_decimal_muldiv(2), grade=grade, field=field, level=level)
             else:
-                # 答えが「a1 / a2」文字列の複合は負の可能性低いが一応セーフガード
                 def gen_mix():
                     q1, a1 = gen_decimal_addsub(1)
                     q2, a2 = gen_decimal_muldiv(1)
