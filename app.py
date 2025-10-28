@@ -13,58 +13,10 @@ import streamlit as st
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-# 追加: 認証
-import yaml
-from yaml import SafeLoader
-import streamlit_authenticator as stauth
-
 # ------------------------------------------------------------------------------
 # ページ設定
 # ------------------------------------------------------------------------------
 st.set_page_config(page_title="算数ドリルジェネレータ", page_icon="🧮", layout="wide")
-
-# ------------------------------------------------------------------------------
-# 認証（Lite: streamlit-authenticator）
-# ------------------------------------------------------------------------------
-def load_auth_config(path: str = "config_auth.yaml") -> Dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.load(f, Loader=SafeLoader)
-    except FileNotFoundError:
-        st.error("認証設定ファイル config_auth.yaml が見つからない。リポジトリ直下に配置すべきである。")
-        st.stop()
-    except Exception as e:
-        st.error(f"認証設定ファイルの読み込みでエラー: {e}")
-        st.stop()
-
-_auth_config = load_auth_config()
-authenticator = stauth.Authenticate(
-    credentials=_auth_config["credentials"],
-    cookie_name=_auth_config["cookie"]["name"],
-    key=_auth_config["cookie"]["key"],
-    cookie_expiry_days=_auth_config["cookie"]["expiry_days"],
-)
-
-with st.sidebar:
-    name, auth_status, username = authenticator.login("ログイン", "sidebar")
-
-if auth_status is False:
-    st.error("認証に失敗した。ユーザー名/パスワードを確認すべきである。")
-    st.stop()
-elif auth_status is None:
-    st.info("ログインが必要である。ユーザー名とパスワードを入力すべきである。")
-    st.stop()
-
-with st.sidebar:
-    st.caption(f"👤 {name} としてログイン中")
-    authenticator.logout("ログアウト", "sidebar")
-    # 任意: 役割をセッションに保持
-    try:
-        role = _auth_config["credentials"]["usernames"][username].get("role", "student")
-    except Exception:
-        role = "student"
-    st.session_state["user_id"] = username
-    st.session_state["user_role"] = role
 
 # ------------------------------------------------------------------------------
 # 出題プリセット表
@@ -148,7 +100,6 @@ def lcmm(*args: int) -> int:
 # PDF: 日本語フォント対応 + フォールバック
 # ------------------------------------------------------------------------------
 def find_japanese_font() -> Union[str, None]:
-    """__file__ を基準に assets のフォントを探す。無ければシステムの候補も見る。"""
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
         os.path.join(here, "assets", "NotoSansJP-Regular.ttf"),
@@ -165,7 +116,6 @@ def find_japanese_font() -> Union[str, None]:
     return None
 
 def ascii_safe(text: str) -> str:
-    # 日本語フォントが無いときは '?' 置換でASCII化（落ちないことを優先）
     return text.encode("latin-1", "replace").decode("latin-1")
 
 def to_bytes(x) -> bytes:
@@ -228,10 +178,8 @@ def build_pdf(title: str, header_meta: Dict[str, str], problems: List[Dict]) -> 
 # バリデーション（負数の除外、LCM=1除外、GCD=1除外）
 # ------------------------------------------------------------------------------
 def answer_is_negative(ans: str) -> bool:
-    """負の答えかどうかを判定する。整数/小数/分数/『あまり』形式に対応。"""
     s = str(ans).strip()
 
-    # 「q あまり r」形式（商を確認）
     if "あまり" in s:
         try:
             q_part = s.split("あまり")[0].strip()
@@ -240,11 +188,9 @@ def answer_is_negative(ans: str) -> bool:
         except Exception:
             return s.startswith("-")
 
-    # 比 a:b は非負のみ生成しているため除外対象外
     if ":" in s:
         return False
 
-    # 分数
     if re.fullmatch(r"-?\d+/\d+", s):
         try:
             fr = fractions.Fraction(s)
@@ -252,7 +198,6 @@ def answer_is_negative(ans: str) -> bool:
         except Exception:
             return s.startswith("-")
 
-    # それ以外は数値化して判定
     try:
         v = float(s)
         return v < -1e-12
@@ -260,7 +205,6 @@ def answer_is_negative(ans: str) -> bool:
         return False
 
 def is_lcm_context(grade: str, field: str, level: int) -> bool:
-    """最小公倍数の文脈判定。"""
     if grade == "小4" and field == "約数・倍数（計算）" and level == 4:
         return True
     if grade == "小6" and field == "最大公約数・最小公倍数" and level >= 4:
@@ -268,7 +212,6 @@ def is_lcm_context(grade: str, field: str, level: int) -> bool:
     return False
 
 def is_gcd_context(grade: str, field: str, level: int) -> bool:
-    """最大公約数の文脈判定。"""
     if grade == "小4" and field == "約数・倍数（計算）" and level in (1, 2, 3, 5):
         return True
     if grade == "小6" and field == "最大公約数・最小公倍数" and level <= 3:
@@ -288,7 +231,6 @@ def gcd_answer_is_one(ans: str) -> bool:
         return False
 
 def generate_safe(gen_callable, *, grade: str, field: str, level: int, max_retry: int = 100) -> Tuple[str, str]:
-    """ジェネレータを呼び、負の答え／LCM=1／GCD=1 を除外して再生成する。"""
     last = ("", "")
     for _ in range(max_retry):
         q, a = gen_callable()
@@ -678,6 +620,7 @@ def _parse_ratio(s: str) -> Optional[Tuple[int, int]]:
         return None
     g = math.gcd(a, b)
     a //= g; b //= g
+    # 比は正に限定しているため負はここでは扱わない
     return (a, b)
 
 def _parse_remainder(s: str) -> Optional[Tuple[int, int]]:
@@ -721,6 +664,7 @@ def compare_answers(expected: str, user: str, tol: float = 1e-6) -> bool:
     m = _DIV_EXPR_RE.match(es)
     if m:
         ex = float(m.group(1)) / float(m.group(2))
+        # ユーザーが式で入れてきたら評価、数値でもOK
         mu = _DIV_EXPR_RE.match(us)
         if mu:
             ux = float(mu.group(1)) / float(mu.group(2))
@@ -733,12 +677,13 @@ def compare_answers(expected: str, user: str, tol: float = 1e-6) -> bool:
     if e_num is not None:
         u_num = _parse_number_like(us)
         if u_num is None:
+            # ユーザが a/b で入れた場合も許容
             u_frac = _parse_fraction(us)
             if u_frac is not None:
                 u_num = float(u_frac)
         return (u_num is not None) and (abs(e_num - u_num) <= tol)
 
-    # それ以外は完全一致
+    # それ以外は完全一致で比較（ほぼ到達しない）
     return es == us
 
 # ------------------------------------------------------------------------------
@@ -808,8 +753,7 @@ if go:
     # セッションに保持（採点に使用）
     st.session_state["problems_df"] = df
     st.session_state["meta"] = {
-        "grade": grade, "field": field, "level": level, "n": n, "seed": seed,
-        "user_id": st.session_state.get("user_id")
+        "grade": grade, "field": field, "level": level, "n": n, "seed": seed
     }
 
     st.subheader("出題結果")
@@ -873,3 +817,6 @@ else:
         out.insert(0, "採点", results)
         out.insert(2, "あなたの解答", [user_inputs.get(i, "") for i in range(len(problems_df))])
         st.dataframe(out, use_container_width=True)
+else:
+    # go=False でまだ生成していない場合
+    pass
