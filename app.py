@@ -817,6 +817,6 @@ else:
         out.insert(0, "採点", results)
         out.insert(2, "あなたの解答", [user_inputs.get(i, "") for i in range(len(problems_df))])
         st.dataframe(out, use_container_width=True)
-else:
+    
     # go=False でまだ生成していない場合
     pass
